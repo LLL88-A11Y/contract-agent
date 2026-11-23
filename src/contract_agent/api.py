@@ -1,19 +1,25 @@
 """HTTP 接口。
 
-第 1 小步只有两个：/health 检查服务在不在；/ask 流式回答一个问题，
-用来确认"FastAPI 收到请求 → 调模型 → 边生成边推给前端"这条链路是通的。
+/health        服务在不在
+/ask           流式回答一个问题（确认"收到请求 → 调模型 → 边生成边推给前端"这条链路是通的）
+/contracts/parse  上传合同 PDF，返回按条款切好的内容
 """
 
 import json
 from collections.abc import AsyncIterator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
+from .clauses import Clause, split_clauses
 from .llm import stream_chat
+from .pdf import NoTextError, read_pages
 
 app = FastAPI(title="租房合同助手", version="0.1.0")
+
+MAX_PDF_BYTES = 10 * 1024 * 1024
 
 
 class AskRequest(BaseModel):
@@ -46,3 +52,26 @@ async def ask(req: AskRequest) -> StreamingResponse:
             yield sse({"type": "error", "message": f"模型调用失败：{e}"})
 
     return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
+
+
+class ParseResult(BaseModel):
+    filename: str
+    pages: int
+    clauses: list[Clause]
+
+
+@app.post("/contracts/parse")
+async def parse_contract(file: UploadFile) -> ParseResult:
+    data = await file.read()
+    if len(data) > MAX_PDF_BYTES:
+        raise HTTPException(413, "文件超过 10 MB")
+    if not data.startswith(b"%PDF"):
+        raise HTTPException(415, "只支持 PDF 文件")
+    try:
+        # 解析 PDF 是纯计算、要花一点时间：放到线程池里跑，不卡住同时进来的其他请求
+        pages = await run_in_threadpool(read_pages, data)
+    except NoTextError as e:
+        raise HTTPException(422, str(e)) from e
+    except Exception as e:
+        raise HTTPException(422, "这个 PDF 打不开，可能已经损坏") from e
+    return ParseResult(filename=file.filename or "", pages=len(pages), clauses=split_clauses(pages))
