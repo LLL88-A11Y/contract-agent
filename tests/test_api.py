@@ -28,5 +28,33 @@ def test_broken_pdf():
     assert r.status_code == 422
 
 
+def test_extract_returns_info_and_clauses(monkeypatch):
+    # 不调用模型：换成一个直接返回结果的假函数，只测接口怎么把各部分拼起来
+    from contract_agent import api
+    from contract_agent.extract import verify
+
+    async def fake_extract(clauses):
+        return verify({"rent": {"yuan": 3200, "quotes": [{"clause": "c3", "text": "月租金为人民币 3200 元"}]}}, clauses)
+
+    monkeypatch.setattr(api, "extract", fake_extract)
+    r = client.post("/contracts/extract", files={"file": ("zufang-01.pdf", (SAMPLES / "zufang-01.pdf").read_bytes(), "application/pdf")})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["info"]["rent"]["yuan"] == 3200
+    assert body["info"]["deposit"] is None
+    assert len(body["clauses"]) == 12
+
+
+def test_extract_reports_model_failure(monkeypatch):
+    from contract_agent import api
+
+    async def broken(clauses):
+        raise RuntimeError("模型接口返回 503")
+
+    monkeypatch.setattr(api, "extract", broken)
+    r = client.post("/contracts/extract", files={"file": ("zufang-01.pdf", (SAMPLES / "zufang-01.pdf").read_bytes(), "application/pdf")})
+    assert r.status_code == 502
+
+
 def test_ask_rejects_empty_question():
     assert client.post("/ask", json={"question": ""}).status_code == 422

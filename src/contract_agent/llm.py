@@ -12,6 +12,23 @@ from .config import settings
 TIMEOUT = httpx.Timeout(60.0, connect=10.0)
 
 
+async def chat(messages: list[dict[str, str]], *, temperature: float = 0, response_format: dict | None = None) -> str:
+    """一次拿到完整回答。抽取信息要拿到整段 JSON 才能检查，用不上流式。
+
+    response_format 传 JSON Schema 时，接口会让模型严格按这个格式输出（OpenAI 的结构化输出）。
+    """
+    s = settings()
+    payload: dict = {"model": s.llm_model, "messages": messages, "temperature": temperature}
+    if response_format:
+        payload["response_format"] = response_format
+    headers = {"Authorization": f"Bearer {s.llm_api_key}"}
+    async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0)) as client:
+        resp = await client.post(f"{s.llm_base_url}/chat/completions", json=payload, headers=headers)
+    if resp.status_code != 200:
+        raise RuntimeError(f"模型接口返回 {resp.status_code}：{resp.text[:200]}")
+    return resp.json()["choices"][0]["message"]["content"] or ""
+
+
 async def stream_chat(messages: list[dict[str, str]], *, temperature: float = 0.3) -> AsyncIterator[str]:
     """流式调用：模型每生成一小段文字，就 yield 一段。
 

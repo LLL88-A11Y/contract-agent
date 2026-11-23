@@ -2,7 +2,8 @@
 
 /health        服务在不在
 /ask           流式回答一个问题（确认"收到请求 → 调模型 → 边生成边推给前端"这条链路是通的）
-/contracts/parse  上传合同 PDF，返回按条款切好的内容
+/contracts/parse    上传合同 PDF，返回按条款切好的内容
+/contracts/extract  再抽出关键信息（租金、押金、租期……），每项附原文，核对不上的扔掉并说明原因
 """
 
 import json
@@ -14,8 +15,9 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from .clauses import Clause, split_clauses
+from .extract import ContractInfo, Dropped, extract
 from .llm import stream_chat
-from .pdf import NoTextError, read_pages
+from .pdf import NoTextError, Page, read_pages
 
 app = FastAPI(title="租房合同助手", version="0.1.0")
 
@@ -60,8 +62,13 @@ class ParseResult(BaseModel):
     clauses: list[Clause]
 
 
-@app.post("/contracts/parse")
-async def parse_contract(file: UploadFile) -> ParseResult:
+class ExtractResult(ParseResult):
+    info: ContractInfo
+    dropped: list[Dropped]  # 模型给了、但没通过核对被扔掉的项，以及原因
+    fixed: list[str]  # 出处写错了、按原文改正的项
+
+
+async def read_upload(file: UploadFile) -> list[Page]:
     data = await file.read()
     if len(data) > MAX_PDF_BYTES:
         raise HTTPException(413, "文件超过 10 MB")
@@ -69,9 +76,25 @@ async def parse_contract(file: UploadFile) -> ParseResult:
         raise HTTPException(415, "只支持 PDF 文件")
     try:
         # 解析 PDF 是纯计算、要花一点时间：放到线程池里跑，不卡住同时进来的其他请求
-        pages = await run_in_threadpool(read_pages, data)
+        return await run_in_threadpool(read_pages, data)
     except NoTextError as e:
         raise HTTPException(422, str(e)) from e
     except Exception as e:
         raise HTTPException(422, "这个 PDF 打不开，可能已经损坏") from e
+
+
+@app.post("/contracts/parse")
+async def parse_contract(file: UploadFile) -> ParseResult:
+    pages = await read_upload(file)
     return ParseResult(filename=file.filename or "", pages=len(pages), clauses=split_clauses(pages))
+
+
+@app.post("/contracts/extract")
+async def extract_contract(file: UploadFile) -> ExtractResult:
+    pages = await read_upload(file)
+    clauses = split_clauses(pages)
+    try:
+        result = await extract(clauses)
+    except Exception as e:
+        raise HTTPException(502, f"模型调用失败：{e}") from e
+    return ExtractResult(filename=file.filename or "", pages=len(pages), clauses=clauses, info=result.info, dropped=result.dropped, fixed=result.fixed)
