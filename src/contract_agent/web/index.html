@@ -218,11 +218,7 @@ footer { color: var(--muted); font-size: 13px; padding: 24px 0 40px; border-top:
         <button type="button" class="btn" id="retry">重试</button>
       </div>
 
-      <section class="card" id="info-section" hidden>
-        <h2>关键信息</h2>
-        <dl class="facts" id="facts"></dl>
-      </section>
-
+      <!-- 租客最想知道哪里有坑：风险和没写的事放最前面，关键信息表在后面备查 -->
       <section class="card" id="risks-section" hidden>
         <h2>值得留意的条款 <span class="count" id="risk-count"></span></h2>
         <p class="note">对照人工审核过的风险清单找出来的。只说合同怎么写、为什么值得问清楚，不判断条款是否违法或无效。</p>
@@ -232,6 +228,11 @@ footer { color: var(--muted); font-size: 13px; padding: 24px 0 40px; border-top:
       <section class="card" id="missing-section" hidden>
         <h2>合同里没写、建议问清楚的事</h2>
         <ul class="missing" id="missing"></ul>
+      </section>
+
+      <section class="card" id="info-section" hidden>
+        <h2>关键信息</h2>
+        <dl class="facts" id="facts"></dl>
       </section>
 
       <section class="card" id="ask-section">
