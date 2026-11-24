@@ -1,5 +1,7 @@
 """HTTP 接口。
 
+/              上传页面（web/index.html）
+/fields        关键信息各项的名称，页面按这个顺序显示
 /health        服务在不在
 /ask           流式回答一个问题（确认"收到请求 → 调模型 → 边生成边推给前端"这条链路是通的）
 /contracts/parse    上传合同 PDF，返回按条款切好的内容
@@ -19,16 +21,17 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI, Form, HTTPException, Request, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from .clauses import Clause, split_clauses
 from .config import ROOT
-from .extract import ContractInfo, Dropped, extract
+from .extract import LABELS, ContractInfo, Dropped, extract
 from .jobs import Jobs, events_of
 from .risks import RiskReport, review
 from .llm import stream_chat
@@ -70,6 +73,18 @@ def sse(event: dict) -> str:
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/", include_in_schema=False)
+async def page() -> FileResponse:
+    """上传页面：一个 HTML 文件，样式和脚本都写在里面，不用前端构建工具。"""
+    return FileResponse(Path(__file__).parent / "web" / "index.html")
+
+
+@app.get("/fields")
+async def fields() -> list[dict[str, str]]:
+    """关键信息各项的名称，页面按这个顺序显示。"""
+    return [{"name": name, "label": label} for name, label in LABELS.items()]
 
 
 @app.post("/ask")

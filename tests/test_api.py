@@ -18,6 +18,13 @@ def test_parse_pdf():
     assert [c["id"] for c in body["clauses"]] == ["preamble", *[f"c{i}" for i in range(1, 11)], "sign"]
 
 
+def test_page_and_field_names():
+    page = client.get("/")
+    assert page.status_code == 200 and "租房合同助手" in page.text
+    names = client.get("/fields").json()
+    assert names[0] == {"name": "landlord", "label": "出租方"} and len(names) == 14
+
+
 def test_not_a_pdf():
     r = client.post("/contracts/parse", files={"file": ("合同.txt", "第一条 租金".encode(), "text/plain")})
     assert r.status_code == 415

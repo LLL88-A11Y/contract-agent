@@ -17,3 +17,6 @@ wheels/
 
 # 本地向量模型和向量库
 data/
+
+# 页面验收截图（scripts/check_page.py 生成）
+evals/results/page/
