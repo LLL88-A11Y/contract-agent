@@ -11,3 +11,6 @@ wheels/
 
 # 密钥
 .env
+
+# 审核时留的备份
+knowledge/*.bak-*

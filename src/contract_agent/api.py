@@ -4,6 +4,7 @@
 /ask           流式回答一个问题（确认"收到请求 → 调模型 → 边生成边推给前端"这条链路是通的）
 /contracts/parse    上传合同 PDF，返回按条款切好的内容
 /contracts/extract  再抽出关键信息（租金、押金、租期……），每项附原文，核对不上的扔掉并说明原因
+/contracts/review   关键信息 + 风险条款（和人工审核过的清单比对，每条附原文和页码）+ 合同里没写、值得问的事
 """
 
 import json
@@ -16,6 +17,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .clauses import Clause, split_clauses
 from .extract import ContractInfo, Dropped, extract
+from .risks import RiskReport, review
 from .llm import stream_chat
 from .pdf import NoTextError, Page, read_pages
 
@@ -98,3 +100,21 @@ async def extract_contract(file: UploadFile) -> ExtractResult:
     except Exception as e:
         raise HTTPException(502, f"模型调用失败：{e}") from e
     return ExtractResult(filename=file.filename or "", pages=len(pages), clauses=clauses, info=result.info, dropped=result.dropped, fixed=result.fixed)
+
+
+class ReviewResult(ExtractResult):
+    risks: RiskReport
+
+
+@app.post("/contracts/review")
+async def review_contract(file: UploadFile) -> ReviewResult:
+    pages = await read_upload(file)
+    clauses = split_clauses(pages)
+    try:
+        extraction, risks = await review(clauses)
+    except Exception as e:
+        raise HTTPException(502, f"模型调用失败：{e}") from e
+    return ReviewResult(
+        filename=file.filename or "", pages=len(pages), clauses=clauses,
+        info=extraction.info, dropped=extraction.dropped, fixed=extraction.fixed, risks=risks,
+    )

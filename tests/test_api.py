@@ -58,3 +58,26 @@ def test_extract_reports_model_failure(monkeypatch):
 
 def test_ask_rejects_empty_question():
     assert client.post("/ask", json={"question": ""}).status_code == 422
+
+
+def test_review_returns_info_risks_and_missing(monkeypatch):
+    from contract_agent import risks
+    from contract_agent.extract import verify
+    from contract_agent.risks import verify_hits
+
+    async def fake_extract(clauses):
+        return verify({}, clauses)
+
+    async def fake_match(clauses):
+        text = "乙方逾期支付租金的，每逾期一日，应按当期租金的 1% 向甲方支付滞纳金。"
+        return verify_hits({"hits": [{"risk": "R06", "how": "每天 1%", "quotes": [{"clause": "c3", "text": text}]}]}, clauses, risks.load())
+
+    monkeypatch.setattr(risks, "extract", fake_extract)
+    monkeypatch.setattr(risks, "match", fake_match)
+    r = client.post("/contracts/review", files={"file": ("zufang-01.pdf", (SAMPLES / "zufang-01.pdf").read_bytes(), "application/pdf")})
+    assert r.status_code == 200
+    report = r.json()["risks"]
+    assert [f["risk"]["id"] for f in report["findings"]] == ["R06"]
+    assert "note" not in report["findings"][0]["risk"]
+    # 假的抽取什么都没抽到：4 项"没写也提示"都要列出来
+    assert [m["risk"]["id"] for m in report["missing"]] == ["R02", "R09", "R11", "R13"]

@@ -126,9 +126,31 @@ def _date_forms(d: date) -> list[str]:
     return [f"{y}年{m}月{dd}日", f"{y}年{m:02d}月{dd:02d}日", f"{y}-{m:02d}-{dd:02d}", f"{y}.{m}.{dd}", f"{y}.{m:02d}.{dd:02d}", f"{y}/{m}/{dd}", f"{y}/{m:02d}/{dd:02d}"]
 
 
+def clause_texts(clauses: list[Clause]) -> dict[str, str]:
+    return {c.id: _norm(c.heading + c.text) for c in clauses}
+
+
+def check_quotes(quotes: list[Quote], texts: dict[str, str], label: str) -> tuple[list[Quote], list[str], str | None]:
+    """逐句核对原文是否真的在合同里。出处写错了块，按原文找到并改正。
+    返回（核对过的原文，改正记录，第一句找不到的原文）；有一句找不到，调用方就扔掉整项。"""
+    checked: list[Quote] = []
+    fixed: list[str] = []
+    for q in quotes:
+        text = _norm(q.text)
+        if text in texts.get(q.clause, ""):
+            checked.append(q)
+            continue
+        found = next((cid for cid, t in texts.items() if text in t), None)
+        if found is None:
+            return checked, fixed, q.text
+        fixed.append(f"{label}：出处写的是 {q.clause}，原文其实在 {found}")
+        checked.append(q.model_copy(update={"clause": found}))
+    return checked, fixed, None
+
+
 def verify(raw: dict, clauses: list[Clause]) -> Extraction:
     """逐项检查模型的输出。不调用模型，方便单独测试。"""
-    texts = {c.id: _norm(c.heading + c.text) for c in clauses}
+    texts = clause_texts(clauses)
     kept: dict = {}
     dropped: list[Dropped] = []
     fixed: list[str] = []
@@ -145,19 +167,10 @@ def verify(raw: dict, clauses: list[Clause]) -> Extraction:
         if not quotes:
             dropped.append(Dropped(field=name, reason="没有附原文"))
             continue
-        checked: list[Quote] = []
-        for q in quotes:
-            text = _norm(q.text)
-            if text in texts.get(q.clause, ""):
-                checked.append(q)
-                continue
-            found = next((cid for cid, t in texts.items() if text in t), None)
-            if found is None:
-                break
-            fixed.append(f"{label}：出处写的是 {q.clause}，原文其实在 {found}")
-            checked.append(q.model_copy(update={"clause": found}))
-        if len(checked) < len(quotes):
-            dropped.append(Dropped(field=name, reason=f"附的原文在合同里找不到：「{quotes[len(checked)].text}」"))
+        checked, notes, missing = check_quotes(quotes, texts, label)
+        fixed += notes
+        if missing is not None:
+            dropped.append(Dropped(field=name, reason=f"附的原文在合同里找不到：「{missing}」"))
             continue
         fact = fact.model_copy(update={"quotes": checked})
         joined = "".join(_norm(q.text) for q in checked)
