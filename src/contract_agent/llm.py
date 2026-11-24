@@ -29,14 +29,17 @@ async def chat(messages: list[dict[str, str]], *, temperature: float = 0, respon
     return resp.json()["choices"][0]["message"]["content"] or ""
 
 
-async def stream_chat(messages: list[dict[str, str]], *, temperature: float = 0.3) -> AsyncIterator[str]:
+async def stream_chat(messages: list[dict[str, str]], *, temperature: float = 0.3, usage: dict | None = None) -> AsyncIterator[str]:
     """流式调用：模型每生成一小段文字，就 yield 一段。
 
     接口返回的是一行一行的 "data: {...}"，最后一行是 "data: [DONE]"。
     每一行里，新生成的文字在 choices[0].delta.content。
+    传入 usage 字典时，顺便要回这次的 token 用量（在最后一段数据里），写进这个字典。
     """
     s = settings()
-    payload = {"model": s.llm_model, "messages": messages, "temperature": temperature, "stream": True}
+    payload: dict = {"model": s.llm_model, "messages": messages, "temperature": temperature, "stream": True}
+    if usage is not None:
+        payload["stream_options"] = {"include_usage": True}
     headers = {"Authorization": f"Bearer {s.llm_api_key}"}
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
         async with client.stream("POST", f"{s.llm_base_url}/chat/completions", json=payload, headers=headers) as resp:
@@ -49,7 +52,10 @@ async def stream_chat(messages: list[dict[str, str]], *, temperature: float = 0.
                 data = line[5:].strip()
                 if data == "[DONE]":
                     break
-                choices = json.loads(data).get("choices") or []
+                chunk = json.loads(data)
+                if usage is not None and chunk.get("usage"):
+                    usage.update(chunk["usage"])
+                choices = chunk.get("choices") or []
                 text = (choices[0].get("delta") or {}).get("content") if choices else None
                 if text:
                     yield text

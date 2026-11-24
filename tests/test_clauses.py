@@ -78,3 +78,14 @@ def test_pdf_without_text():
     doc.save(buf)
     with pytest.raises(NoTextError):
         read_pages(buf.getvalue())
+
+
+def test_chapters_and_annex():
+    clauses = split_clauses(read_pages((SAMPLES / "zufang-03.pdf").read_bytes()))
+    by_id = {c.id: c for c in clauses}
+    assert [c.id for c in clauses if c.number] == [f"c{i}" for i in range(1, 85)]
+    assert by_id["c1"].chapter == "第一章 总则" and by_id["c84"].chapter == "第十章 其他"
+    # 章标题不混进上一条的正文
+    assert "第二章" not in by_id["c8"].text
+    assert [c.id for c in clauses][-2:] == ["sign", "annex1"]
+    assert by_id["annex1"].title == "房间设施清单" and "| 热水器 | 1 | 完好 |" in by_id["annex1"].text

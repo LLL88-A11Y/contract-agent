@@ -5,12 +5,14 @@
 /contracts/parse    上传合同 PDF，返回按条款切好的内容
 /contracts/extract  再抽出关键信息（租金、押金、租期……），每项附原文，核对不上的扔掉并说明原因
 /contracts/review   关键信息 + 风险条款（和人工审核过的清单比对，每条附原文和页码）+ 合同里没写、值得问的事
+/contracts/ask      就这份合同追问，流式回答，说到合同的地方附出处并由代码核对
 """
 
 import json
 from collections.abc import AsyncIterator
+from typing import Literal
 
-from fastapi import FastAPI, HTTPException, UploadFile
+from fastapi import FastAPI, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
@@ -19,6 +21,7 @@ from .clauses import Clause, split_clauses
 from .extract import ContractInfo, Dropped, extract
 from .risks import RiskReport, review
 from .llm import stream_chat
+from .qa import answer
 from .pdf import NoTextError, Page, read_pages
 
 app = FastAPI(title="租房合同助手", version="0.1.0")
@@ -118,3 +121,21 @@ async def review_contract(file: UploadFile) -> ReviewResult:
         filename=file.filename or "", pages=len(pages), clauses=clauses,
         info=extraction.info, dropped=extraction.dropped, fixed=extraction.fixed, risks=risks,
     )
+
+
+@app.post("/contracts/ask")
+async def ask_contract(
+    file: UploadFile,
+    question: str = Form(min_length=1, max_length=500),
+    mode: Literal["auto", "full", "retrieve"] = Form("auto"),
+) -> StreamingResponse:
+    clauses = split_clauses(await read_upload(file))
+
+    async def events() -> AsyncIterator[str]:
+        try:
+            async for event in answer(question, clauses, mode):
+                yield sse(event)
+        except Exception as e:  # 和 /ask 一样：出错也给前端一个明确的结尾
+            yield sse({"type": "error", "message": f"回答失败：{e}"})
+
+    return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})

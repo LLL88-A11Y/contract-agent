@@ -14,3 +14,6 @@ wheels/
 
 # 审核时留的备份
 knowledge/*.bak-*
+
+# 本地向量模型和向量库
+data/

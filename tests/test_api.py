@@ -81,3 +81,19 @@ def test_review_returns_info_risks_and_missing(monkeypatch):
     assert "note" not in report["findings"][0]["risk"]
     # 假的抽取什么都没抽到：4 项"没写也提示"都要列出来
     assert [m["risk"]["id"] for m in report["missing"]] == ["R02", "R09", "R11", "R13"]
+
+
+def test_ask_streams_answer_events(monkeypatch):
+    from contract_agent import api
+
+    async def fake_answer(question, clauses, mode):
+        yield {"type": "delta", "text": f"{question}|{mode}|{len(clauses)}"}
+        yield {"type": "done"}
+
+    monkeypatch.setattr(api, "answer", fake_answer)
+    pdf = (SAMPLES / "zufang-03.pdf").read_bytes()
+    r = client.post("/contracts/ask", files={"file": ("z.pdf", pdf, "application/pdf")}, data={"question": "能养猫吗"})
+    assert r.status_code == 200
+    assert '"text": "能养猫吗|auto|87"' in r.text and '"type": "done"' in r.text
+    bad = client.post("/contracts/ask", files={"file": ("z.pdf", pdf, "application/pdf")}, data={"question": "能养猫吗", "mode": "guess"})
+    assert bad.status_code == 422
