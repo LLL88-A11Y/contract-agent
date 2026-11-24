@@ -36,6 +36,13 @@ def test_not_written_is_detected_at_the_start_only():
     assert not qa.says_not_written("不行〔c46：……〕。合同里没写别的例外。")
 
 
+def test_missing_hint_is_found_anywhere_in_the_answer():
+    # 第 5 步检索方式答错的那道题：开头答了别的，句中才说"没有约定"
+    assert qa.may_be_missing("合同只写了房间面积〔c9：套内面积约 28 平方米〕。合同里也没有约定换房流程或条件。")
+    assert qa.may_be_missing("合同里没写停车的事。")
+    assert not qa.may_be_missing("不行〔c46：乙方不得在房间内饲养猫、狗等宠物〕。")
+
+
 def test_short_contract_uses_full_text_long_one_retrieves():
     assert qa.choose_mode(CLAUSES, "auto") == "full"
     long = CLAUSES + [Clause(id=f"x{i}", number=None, heading="", title="", text="字" * 1000, pages=[1]) for i in range(30)]
@@ -72,6 +79,13 @@ def test_retrieve_then_full_when_not_written(monkeypatch):
     done = events[-1]
     assert done["mode"] == "retrieve+full" and not done["not_written"] and done["prompt_tokens"] == 1000
     assert events[-2]["items"][0]["status"] == "ok"  # 只核对最后那个回答的出处
+
+
+def test_retrieve_then_full_when_missing_is_mentioned_midway(monkeypatch):
+    calls = fake_model(monkeypatch, "合同只写了房间面积。合同里也没有约定换房。", "可以申请换房〔c24：……〕")
+    events = run("能换房吗", "retrieve")
+    assert calls == [True, False] and "retry" in [e["type"] for e in events]
+    assert events[-1]["mode"] == "retrieve+full"
 
 
 def test_retrieve_answer_is_kept_when_found(monkeypatch):

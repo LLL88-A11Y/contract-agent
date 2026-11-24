@@ -2,7 +2,7 @@
 直接用 httpx 发请求、自己解析流式数据，不用官方 SDK，方便看清楚每一步在做什么。"""
 
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 
 import httpx
 
@@ -10,6 +10,10 @@ from .config import settings
 
 # 连上接口最多等 10 秒；之后每一段数据之间最多等 60 秒
 TIMEOUT = httpx.Timeout(60.0, connect=10.0)
+
+# 和 chat 用法一样的函数。抽取、比对都可以传一个进来：默认就是 chat，直接调模型；
+# 后台任务传的是先查存着的回答、再排队调模型的版本（见 jobs.py）
+Chat = Callable[..., Awaitable[str]]
 
 
 async def chat(messages: list[dict[str, str]], *, temperature: float = 0, response_format: dict | None = None) -> str:

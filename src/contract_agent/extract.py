@@ -20,7 +20,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from .clauses import Clause, split_clauses
-from .llm import chat
+from .llm import Chat, chat
 from .pdf import read_pages
 
 
@@ -188,7 +188,7 @@ def contract_text(clauses: list[Clause]) -> str:
     return "\n\n".join(f"[{c.id}] {c.heading}\n{c.text}".replace("] \n", "]\n") for c in clauses)
 
 
-async def extract(clauses: list[Clause]) -> Extraction:
+async def extract(clauses: list[Clause], chat: Chat = chat) -> Extraction:
     answer = await chat(
         [{"role": "system", "content": PROMPT}, {"role": "user", "content": contract_text(clauses)}],
         response_format={"type": "json_schema", "json_schema": {"name": "contract_info", "strict": True, "schema": SCHEMA}},

@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field, ValidationError
 from .checklist import Risk, load
 from .clauses import Clause, split_clauses
 from .extract import LABELS, Dropped, Extraction, Quote, check_quotes, clause_texts, contract_text, extract, strict_schema
-from .llm import chat
+from .llm import Chat, chat
 from .pdf import read_pages
 
 
@@ -146,7 +146,7 @@ def annex_note(clauses: list[Clause]) -> str:
     return "（合同到此结束，签字栏后面没有附件。）"
 
 
-async def match(clauses: list[Clause]) -> tuple[list[Finding], list[Dropped], list[str]]:
+async def match(clauses: list[Clause], chat: Chat = chat) -> tuple[list[Finding], list[Dropped], list[str]]:
     risks = load()
     answer = await chat(
         [

@@ -9,8 +9,8 @@
 出处的写法是〔c39：原文片段〕，回答说完后代码逐个核对：片段在那一条里 → 核对通过；
 在别的条里 → 改正出处；哪条都没有 → 标成"未能核对"（不删：回答是一整段话，删掉一句可能读不通）。
 
-"合同里没写"由模型说，代码核对不了。检索模式下它可能只是没检索到，所以说"没写"之前，
-改成看全文再答一次。
+"合同里没写"由模型说，代码核对不了。检索模式下它可能只是没检索到，所以回答里说到"没写"，
+就改成看全文再答一次。不只看开头：模型常在句中顺带一句"合同里也没有约定换房"，开头却没写"合同里没写"。
 
     uv run python -m contract_agent.qa samples/zufang-03.pdf 我能养猫吗
     uv run python -m contract_agent.qa samples/zufang-03.pdf 我能养猫吗 --retrieve   # 强制检索
@@ -45,6 +45,8 @@ PROMPT = f"""你回答租客关于他这份租房合同的问题。只根据下�
 - 简短，三五句话以内。"""
 
 CITATION = re.compile(r"〔\s*([A-Za-z]+\d*)\s*[：:]\s*([^〕]+?)\s*〕")
+# 回答里说某件事合同没写的各种说法。检索模式下出现在哪里都算：多看一次全文只多花点 token，漏看可能答错
+MISSING_HINT = re.compile(r"没写|没有写|没有(约定|说明|提到|提及|规定|写明)|未(约定|说明|提到|提及|规定|写明)")
 
 
 class Citation(BaseModel):
@@ -60,7 +62,13 @@ def contract_part(clauses: list[Clause]) -> str:
 
 
 def says_not_written(answer: str) -> bool:
+    """整个回答是不是"合同里没写"：只看开头。"""
     return answer.lstrip(" \n“\"「").startswith(NOT_WRITTEN)
+
+
+def may_be_missing(answer: str) -> bool:
+    """回答里有没有说到哪件事合同没写：哪里都算。检索模式下用它决定要不要改看全文。"""
+    return bool(MISSING_HINT.search(answer))
 
 
 def check_citations(answer: str, clauses: list[Clause]) -> list[Citation]:
@@ -122,9 +130,9 @@ async def answer(question: str, clauses: list[Clause], mode: str = "auto", k: in
         async for event in run(part, partial=True):
             text += event["text"]
             yield event
-        if says_not_written(text):
+        if may_be_missing(text):
             # 可能只是没检索到：看全文再答一次，前端用新的回答替换旧的
-            yield {"type": "retry", "reason": "检索到的几条里没找到，改看合同全文再答一次"}
+            yield {"type": "retry", "reason": "检索到的几条里有没找到的，改看合同全文再答一次"}
             used, text = "retrieve+full", ""
             async for event in run(clauses, partial=False):
                 text += event["text"]

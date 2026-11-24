@@ -6,25 +6,53 @@
 /contracts/extract  再抽出关键信息（租金、押金、租期……），每项附原文，核对不上的扔掉并说明原因
 /contracts/review   关键信息 + 风险条款（和人工审核过的清单比对，每条附原文和页码）+ 合同里没写、值得问的事
 /contracts/ask      就这份合同追问，流式回答，说到合同的地方附出处并由代码核对
+
+后台任务（页面用这一组；上面几个一直等到出结果，留着方便命令行试）：
+/jobs                  上传合同，马上返回任务号和切好的条款；抽取和比对在后台跑
+/jobs/{id}             任务现在的状态和已经出来的结果
+/jobs/{id}/events      进度（SSE）：先补发已经做完的步骤，之后做完一步推一步
+/jobs/{id}/retry       失败的任务重试，只重做失败的那一步
+/jobs/{id}/ask         就这份合同追问，不用再传 PDF
 """
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Literal
 
-from fastapi import FastAPI, Form, HTTPException, UploadFile
+from fastapi import FastAPI, Form, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from .clauses import Clause, split_clauses
+from .config import ROOT
 from .extract import ContractInfo, Dropped, extract
+from .jobs import Jobs, events_of
 from .risks import RiskReport, review
 from .llm import stream_chat
 from .qa import answer
 from .pdf import NoTextError, Page, read_pages
+from .store import Job, Store
 
-app = FastAPI(title="租房合同助手", version="0.1.0")
+DB = ROOT / "data" / "jobs.sqlite"
+PING_SECONDS = 15
+
+
+def make_jobs() -> Jobs:
+    return Jobs(Store(DB))
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    app.state.jobs = make_jobs()
+    app.state.jobs.resume()  # 上次关掉或崩溃时没做完的任务，接着跑
+    yield
+    await app.state.jobs.stop()
+
+
+app = FastAPI(title="租房合同助手", version="0.1.0", lifespan=lifespan)
 
 MAX_PDF_BYTES = 10 * 1024 * 1024
 
@@ -129,8 +157,10 @@ async def ask_contract(
     question: str = Form(min_length=1, max_length=500),
     mode: Literal["auto", "full", "retrieve"] = Form("auto"),
 ) -> StreamingResponse:
-    clauses = split_clauses(await read_upload(file))
+    return answer_stream(question, split_clauses(await read_upload(file)), mode)
 
+
+def answer_stream(question: str, clauses: list[Clause], mode: str) -> StreamingResponse:
     async def events() -> AsyncIterator[str]:
         try:
             async for event in answer(question, clauses, mode):
@@ -139,3 +169,71 @@ async def ask_contract(
             yield sse({"type": "error", "message": f"回答失败：{e}"})
 
     return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
+
+
+def job_or_404(jobs: Jobs, job_id: str) -> Job:
+    job = jobs.store.get(job_id)
+    if job is None:
+        raise HTTPException(404, "没有这个任务")
+    return job
+
+
+@app.post("/jobs", status_code=202)
+async def create_job(request: Request, file: UploadFile) -> Job:
+    """读 PDF、切条款当场做（不到半秒，读不出来马上报错）；抽取和比对交给后台。202 表示"收下了，还没做完"。"""
+    pages = await read_upload(file)
+    return request.app.state.jobs.submit(file.filename or "", len(pages), split_clauses(pages))
+
+
+@app.get("/jobs/{job_id}")
+async def get_job(request: Request, job_id: str) -> Job:
+    return job_or_404(request.app.state.jobs, job_id)
+
+
+@app.get("/jobs/{job_id}/events")
+async def job_events(request: Request, job_id: str) -> StreamingResponse:
+    jobs: Jobs = request.app.state.jobs
+    job_or_404(jobs, job_id)
+
+    async def events() -> AsyncIterator[str]:
+        # 先订阅，再补发已经做完的步骤：补发时刚好做完的那一步不会漏掉，最多收到两次，按类型去掉重复
+        queue = jobs.listen(job_id)
+        try:
+            sent: set[str] = set()
+            pending = events_of(jobs.store.get(job_id))
+            while True:
+                for event in pending:
+                    if event["type"] not in sent:
+                        sent.add(event["type"])
+                        yield sse(event)
+                if sent & {"done", "failed"}:
+                    return
+                try:
+                    pending = [await asyncio.wait_for(queue.get(), PING_SECONDS)]
+                except TimeoutError:
+                    pending = []
+                    yield ": ping\n\n"  # 排队久了也隔一会儿发一行注释，免得连接被当成断了
+        finally:
+            jobs.unlisten(job_id, queue)
+
+    return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
+
+
+@app.post("/jobs/{job_id}/retry", status_code=202)
+async def retry_job(request: Request, job_id: str) -> Job:
+    jobs: Jobs = request.app.state.jobs
+    if job_or_404(jobs, job_id).status != "failed":
+        raise HTTPException(409, "只有失败的任务可以重试")
+    jobs.retry(job_id)
+    return jobs.store.get(job_id)
+
+
+class JobQuestion(BaseModel):
+    question: str = Field(min_length=1, max_length=500)
+    mode: Literal["auto", "full", "retrieve"] = "auto"
+
+
+@app.post("/jobs/{job_id}/ask")
+async def ask_job(request: Request, job_id: str, req: JobQuestion) -> StreamingResponse:
+    """用任务里存着的条款回答，不用再传一次 PDF。"""
+    return answer_stream(req.question, job_or_404(request.app.state.jobs, job_id).clauses, req.mode)
