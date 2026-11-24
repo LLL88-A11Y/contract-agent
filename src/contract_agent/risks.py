@@ -29,6 +29,9 @@ class Hit(BaseModel):
     risk: str = Field(description="命中的清单编号，如 R06")
     quotes: list[Quote] = Field(description="合同里命中这一条的原文，一字不差地复制；写在几处就各复制一句")
     how: str = Field(description="一句大白话：这份合同具体是怎么写的。只陈述，不评价，不说违法、无效")
+    # 先写对照，再下结论：模型写完对照常常会发现自己报错了，让它能撤回（默认值只为测试方便，严格模式下两项都必须写）
+    check: str = Field("", description="对照这一条的'不要误报'：合同的写法是不是那种不算的情况，一句话")
+    keep: bool = Field(True, description="对照之后仍然算命中填 true；属于'不要误报'说的情况填 false")
 
 
 class HitList(BaseModel):
@@ -36,6 +39,7 @@ class HitList(BaseModel):
 
 
 SCHEMA = strict_schema(HitList.model_json_schema())
+WITHDRAWN = "对照'不要误报'后撤回"
 
 
 class Finding(BaseModel):
@@ -68,7 +72,8 @@ PROMPT = """你帮租客检查租房合同。下面是一份人工审核过的�
 - 只报清单里有的编号，按清单的意思判断，对照"不要误报"排除看起来像、其实没问题的写法。拿不准的不报。
 - quotes 一字不差地复制命中的原文（可以只复制相关的一段），clause 写这句话所在块的 id。同一条风险写在几处，就各复制一句；一处原文可以命中几条风险。
 - how 用一句大白话说这份合同具体怎么写的，只陈述，不评价，不说"违法""无效""霸王条款"。
-- 合同里没写某件事，不在这里报。
+- check 拿 how 去对照这一条的"不要误报"，说合同的写法是不是那种不算的情况。是的话 keep 填 false，程序会去掉这一条；不是才填 true。
+- 合同完全没提到的事不报（其中押金退还、费用、维修、提前退租没写的，程序会另外提示）。但合同提到了、东西却没给的要报：比如写了"见附件""按某某规定执行"，合同后面却没附上。合同后面附了什么，看合同最后一行的说明。
 
 风险清单：
 
@@ -92,6 +97,9 @@ def verify_hits(raw: dict, clauses: list[Clause], risks: tuple[Risk, ...]) -> tu
         risk = by_id.get(hit.risk.strip())
         if risk is None:
             dropped.append(Dropped(field=hit.risk, reason="清单里没有这个编号"))
+            continue
+        if not hit.keep:
+            dropped.append(Dropped(field=risk.id, reason=f"{WITHDRAWN}（{hit.check.strip()}）"))
             continue
         quotes = [q for q in hit.quotes if q.text.strip()]
         if not quotes:
@@ -130,10 +138,21 @@ def find_missing(extraction: Extraction, findings: list[Finding], risks: tuple[R
     return out
 
 
+def annex_note(clauses: list[Clause]) -> str:
+    """合同后面附了什么，由切分结果告诉模型。模型自己分不清附件是没附上，还是没给它看。"""
+    annexes = [c.heading for c in clauses if c.id.startswith("annex")]
+    if annexes:
+        return f"（合同到此结束。签字栏后面附有：{'、'.join(annexes)}。）"
+    return "（合同到此结束，签字栏后面没有附件。）"
+
+
 async def match(clauses: list[Clause]) -> tuple[list[Finding], list[Dropped], list[str]]:
     risks = load()
     answer = await chat(
-        [{"role": "system", "content": PROMPT + checklist_text(risks)}, {"role": "user", "content": contract_text(clauses)}],
+        [
+            {"role": "system", "content": PROMPT + checklist_text(risks)},
+            {"role": "user", "content": f"{contract_text(clauses)}\n\n{annex_note(clauses)}"},
+        ],
         response_format={"type": "json_schema", "json_schema": {"name": "risk_hits", "strict": True, "schema": SCHEMA}},
     )
     try:

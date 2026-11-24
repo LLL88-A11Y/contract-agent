@@ -3,12 +3,13 @@
     uv run python evals/traps.py --key            # 不调模型：检查答案表，生成 evals/traps-答案.md 给人审
     uv run python evals/traps.py                  # dev 组每份跑 3 次
     uv run python evals/traps.py --set test       # test 组：平时不跑，只在最后测
-    uv run python evals/traps.py --runs 5
+    uv run python evals/traps.py --runs 5 --label "提示词 A"   # 标签写进结果标题，比较改动时用
 
 全部由代码打分，不用模型当裁判：
 - 找到：报了这个编号，引用的原文落在答案表写的那一条里；编号对、条款不对算"位置不对"，不算找到
 - 误报：报了答案表里没有的编号（"两可"的不算）；报的是"诱饵"另外标出来
-- 没写提醒：合同故意没写的那几项，提示了算对；没故意不写却提示了算多报
+- 没写提醒：合同故意没写的那几项，提示了算对；没故意不写却提示了算多报。
+  模型引用相关条款把对应的风险报了出来（只写了押金金额，报 R02），也算提示到了，不算误报
 
 结果写到 evals/results/traps-时间.md。
 """
@@ -24,12 +25,13 @@ from contract_agent.checklist import load
 from contract_agent.clauses import Clause, split_clauses
 from contract_agent.extract import LABELS
 from contract_agent.pdf import read_pages
-from contract_agent.risks import review
+from contract_agent.risks import WITHDRAWN, review
 
 ROOT = Path(__file__).resolve().parents[1]
 KEY = json.loads((ROOT / "evals" / "traps.json").read_text(encoding="utf-8"))["contracts"]
 RISKS = {r.id: r for r in load()}
-ABSENT = {name for r in RISKS.values() for name in r.absent}
+RISK_OF = {name: r.id for r in RISKS.values() for name in r.absent}  # 没写也提示的项 → 清单编号
+ABSENT = set(RISK_OF)
 
 
 def clauses_of(item: dict) -> list[Clause]:
@@ -105,11 +107,14 @@ def grade(key: dict, findings: list, missing: list) -> dict:
             found.append(t["risk"])
         else:
             misplaced.append(t["risk"])
-    expected = {t["risk"] for t in key["traps"]} | {e["risk"] for e in key["either"]}
+    want_missing = set(key["missing"])
+    # 合同故意没写的事，模型引用相关条款把对应的那条风险报了出来（比如只写了押金金额，报 R02）：
+    # 用户看到的是同一条提醒，算提示到了，也不算误报
+    via_hit = {name for name in want_missing if RISK_OF[name] in reported}
+    expected = {t["risk"] for t in key["traps"]} | {e["risk"] for e in key["either"]} | {RISK_OF[name] for name in want_missing}
     decoys = {d["risk"] for d in key["decoys"]}
     false = [r for r in reported if r not in expected]
-    got_missing = {m.field for m in missing}
-    want_missing = set(key["missing"])
+    got_missing = {m.field for m in missing} | via_hit
     return {
         "found": found, "misplaced": misplaced, "missed": missed,
         "false": false, "decoy_hits": [r for r in false if r in decoys],
@@ -122,7 +127,9 @@ async def run_one(key: dict, gate: asyncio.Semaphore) -> dict:
     async with gate:
         extraction, report = await review(key["clauses"])
     result = grade(key, report.findings, report.missing)
-    result["dropped"] = [f"{d.field}：{d.reason}" for d in report.dropped + extraction.dropped]
+    withdrawn = [d for d in report.dropped if d.reason.startswith(WITHDRAWN)]
+    result["withdrawn"] = {d.field: d.reason[len(WITHDRAWN):] for d in withdrawn}
+    result["dropped"] = [f"{d.field}：{d.reason}" for d in report.dropped + extraction.dropped if d not in withdrawn]
     # 模型报了什么：看误报的理由、漏掉的那条被报成了什么
     result["reported"] = {f.risk.id: {"clauses": sorted({q.clause for q in f.quotes}), "how": f.how} for f in report.findings}
     return {"file": key["file"], **result}
@@ -167,7 +174,13 @@ def tables(keys: list[dict], runs: list[dict], n: int) -> list[str]:
             # 漏掉的那几次，同一条上报了别的什么
             other = Counter(risk for r in lost for risk, x in r["reported"].items() if risk != t["risk"] and set(x["clauses"]) & set(t["ids"]))
             said = "、".join(f"{risk}×{n}" for risk, n in other.items()) or "什么都没报"
+            back = sum(t["risk"] in r["withdrawn"] for r in lost)
+            said += f"；报了又撤回 {back} 次" if back else ""
             lines.append(f"- {stem} 漏 {t['risk']} {RISKS[t['risk']].title} {len(lost)}/{len(rs)} 次（{'/'.join(t['ids'])} 上{said}）")
+        kinds = {e["risk"]: label for kind, label in (("traps", "坑"), ("decoys", "诱饵"), ("either", "两可")) for e in k[kind]}
+        for risk, count in Counter(x for r in rs for x in r["withdrawn"]).items():
+            why = next(r["withdrawn"][risk] for r in rs if risk in r["withdrawn"])
+            lines.append(f"- {stem} 撤回 {risk} {RISKS[risk].title}（{kinds.get(risk, '没埋')}）{count}/{len(rs)} 次{why}")
         for risk, count in Counter(x for r in rs for x in r["false"]).items():
             tag = "诱饵" if any(risk in r["decoy_hits"] for r in rs) else "没埋"
             how = next(r["reported"][risk] for r in rs if risk in r["false"])
@@ -201,7 +214,8 @@ def main() -> None:
         return await asyncio.gather(*[run_one(k, gate) for k in chosen for _ in range(n)])
 
     runs = asyncio.run(run_all())
-    lines = [f"# 风险条款评测 {datetime.now():%Y-%m-%d %H:%M}（{which} 组，每份 {n} 次）", ""] + tables(chosen, runs, n)
+    label = sys.argv[sys.argv.index("--label") + 1] if "--label" in sys.argv else ""
+    lines = [f"# 风险条款评测 {datetime.now():%Y-%m-%d %H:%M}（{which} 组，每份 {n} 次）{label}", ""] + tables(chosen, runs, n)
     out = ROOT / "evals" / "results" / f"traps-{which}-{datetime.now():%Y%m%dT%H%M%S}.md"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text("\n".join(lines) + "\n", encoding="utf-8")

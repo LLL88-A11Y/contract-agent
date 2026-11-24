@@ -86,6 +86,12 @@ def test_nothing_is_called_missing_when_extraction_failed():
     assert find_missing(extraction([Dropped(field="*", reason="模型返回的不是 JSON")]), [], RISKS) == []
 
 
+def test_hit_withdrawn_after_checking_not_risk_is_dropped():
+    raw = {"hits": [{**hit("R05", (clause_of(RAISE), RAISE)), "check": "写死了涨幅，属于不算的情况", "keep": False}]}
+    findings, dropped, _ = verify_hits(raw, CLAUSES, RISKS)
+    assert findings == [] and dropped[0].field == "R05" and "撤回" in dropped[0].reason and "写死了涨幅" in dropped[0].reason
+
+
 def test_risk_already_found_is_not_repeated_as_missing():
     findings, _, _ = verify_hits({"hits": [hit("R13", (clause_of(KEEP), KEEP))]}, CLAUSES, RISKS)
     written = {name: SAID for name in ("deposit_refund", "fees", "repairs")}

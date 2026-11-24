@@ -37,6 +37,13 @@ def test_grade_counts_found_misplaced_false_and_missing():
     assert g["missing_ok"] == ["repairs"] and g["missing_lost"] == ["early_termination"] and g["missing_extra"] == ["fees"]
 
 
+def test_missing_item_reported_as_risk_counts_as_reminded():
+    # trap-03 押金退还没写：模型引用押金那条报 R02，和程序提示"没写"是同一条提醒
+    key = next(k for k in KEYS if k["file"].endswith("trap-03.pdf"))
+    g = traps.grade(key, [finding("R02", "c4")], [])
+    assert g["false"] == [] and g["missing_ok"] == ["deposit_refund"] and g["missing_lost"] == []
+
+
 def test_either_is_not_a_false_positive():
     key = next(k for k in KEYS if k["file"].endswith("trap-03.pdf"))
     assert traps.grade(key, [finding("R15", "c10")], [])["false"] == []
